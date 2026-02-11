@@ -2,7 +2,8 @@
 
 use rustafari_core::{ColumnType, Result, RustafariError, Value};
 use sqlparser::ast::{
-    Expr, ObjectType, Query, SelectItem, SetExpr, Statement, TableFactor, Values,
+    Expr, Function, FunctionArgExpr, ObjectType, Query, SelectItem, SetExpr, Statement,
+    TableFactor, Values,
 };
 
 /// Logical plan node (simplified relational algebra).
@@ -22,6 +23,11 @@ pub enum PlanNode {
     Project {
         input: Box<PlanNode>,
         columns: Vec<String>,
+    },
+    /// Global aggregation (no GROUP BY): SUM, COUNT, AVG, MIN, MAX.
+    Aggregate {
+        input: Box<PlanNode>,
+        aggs: Vec<AggExpr>,
     },
     /// Limit rows.
     Limit {
@@ -72,6 +78,17 @@ pub enum CmpOp {
     Ge,
     Lt,
     Le,
+}
+
+/// Aggregate expression: function name and column (or * for COUNT).
+#[derive(Debug, Clone)]
+pub enum AggExpr {
+    Sum { column: String },
+    CountStar,
+    Count { column: String },
+    Avg { column: String },
+    Min { column: String },
+    Max { column: String },
 }
 
 /// Root of a logical plan.
@@ -209,22 +226,30 @@ fn query_to_plan(query: Query) -> Result<LogicalPlan> {
             predicate: expr_to_filter(where_expr)?,
         };
     }
-    let columns: Vec<String> = sel
-        .projection
-        .iter()
-        .filter_map(|p| {
-            if let SelectItem::UnnamedExpr(Expr::Identifier(id)) = p {
-                Some(id.value.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    if !columns.is_empty() {
-        root = PlanNode::Project {
+    // Check for aggregate-only projection (e.g. SELECT SUM(x), COUNT(*) FROM t).
+    if let Some(aggs) = projection_as_aggs(&sel.projection) {
+        root = PlanNode::Aggregate {
             input: Box::new(root),
-            columns,
+            aggs,
         };
+    } else {
+        let columns: Vec<String> = sel
+            .projection
+            .iter()
+            .filter_map(|p| {
+                if let SelectItem::UnnamedExpr(Expr::Identifier(id)) = p {
+                    Some(id.value.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !columns.is_empty() {
+            root = PlanNode::Project {
+                input: Box::new(root),
+                columns,
+            };
+        }
     }
     let limit = query.limit.as_ref().map(parse_limit).unwrap_or(u64::MAX);
     let offset = query.offset.as_ref().map(|o| parse_limit(&o.value)).unwrap_or(0);
@@ -244,6 +269,56 @@ fn parse_limit(expr: &Expr) -> u64 {
     } else {
         0
     }
+}
+
+/// Parse a single aggregate expression from a function call (SUM, COUNT, AVG, MIN, MAX).
+fn expr_to_agg(f: &Function) -> Result<AggExpr> {
+    let name = f.name.0.first().map(|i| i.value.to_uppercase()).unwrap_or_default();
+    let first_arg = f.args.first();
+    let col_from_arg = |a: &sqlparser::ast::FunctionArg| -> Result<String> {
+        match a {
+            sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(id))) => {
+                Ok(id.value.clone())
+            }
+            _ => Err(RustafariError::Parse("aggregate argument must be a column name".into())),
+        }
+    };
+    match name.as_str() {
+        "SUM" => Ok(AggExpr::Sum { column: col_from_arg(first_arg.ok_or_else(|| RustafariError::Parse("SUM requires one argument".into()))?)? }),
+        "COUNT" => {
+            if let Some(sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) = first_arg {
+                Ok(AggExpr::CountStar)
+            } else if let Some(a) = first_arg {
+                Ok(AggExpr::Count { column: col_from_arg(a)? })
+            } else {
+                Err(RustafariError::Parse("COUNT requires * or column".into()))
+            }
+        }
+        "AVG" => Ok(AggExpr::Avg { column: col_from_arg(first_arg.ok_or_else(|| RustafariError::Parse("AVG requires one argument".into()))?)? }),
+        "MIN" => Ok(AggExpr::Min { column: col_from_arg(first_arg.ok_or_else(|| RustafariError::Parse("MIN requires one argument".into()))?)? }),
+        "MAX" => Ok(AggExpr::Max { column: col_from_arg(first_arg.ok_or_else(|| RustafariError::Parse("MAX requires one argument".into()))?)? }),
+        _ => Err(RustafariError::Parse(format!("unsupported aggregate: {}", name))),
+    }
+}
+
+/// If the projection is only aggregate expressions, return them.
+fn projection_as_aggs(projection: &[SelectItem]) -> Option<Vec<AggExpr>> {
+    let mut aggs = Vec::with_capacity(projection.len());
+    for p in projection {
+        let expr = match p {
+            SelectItem::UnnamedExpr(e) => e,
+            _ => return None,
+        };
+        let agg = match expr {
+            Expr::Function(f) => expr_to_agg(f).ok()?,
+            _ => return None,
+        };
+        aggs.push(agg);
+    }
+    if aggs.is_empty() {
+        return None;
+    }
+    Some(aggs)
 }
 
 fn values_from_ast(values: Values) -> Result<Vec<Vec<Value>>> {

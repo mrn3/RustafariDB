@@ -20,6 +20,56 @@
         ]
       },
       "storage_format": "row"
+    },
+    {
+      "id": 3,
+      "namespace_id": 0,
+      "name": "olap_test",
+      "schema": {
+        "columns": [
+          {
+            "name": "id",
+            "data_type": "BigInt",
+            "nullable": true
+          },
+          {
+            "name": "amount",
+            "data_type": "BigInt",
+            "nullable": true
+          },
+          {
+            "name": "category",
+            "data_type": "Text",
+            "nullable": true
+          }
+        ]
+      },
+      "storage_format": "row"
+    },
+    {
+      "id": 4,
+      "namespace_id": 0,
+      "name": "olap_test",
+      "schema": {
+        "columns": [
+          {
+            "name": "id",
+            "data_type": "BigInt",
+            "nullable": true
+          },
+          {
+            "name": "amount",
+            "data_type": "BigInt",
+            "nullable": true
+          },
+          {
+            "name": "category",
+            "data_type": "Text",
+            "nullable": true
+          }
+        ]
+      },
+      "storage_format": "row"
     }
   ]
 }

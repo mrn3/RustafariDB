@@ -5,7 +5,7 @@
 pub mod plan;
 pub mod dialect;
 
-pub use plan::{CmpOp, FilterExpr, LogicalPlan, PlanNode};
+pub use plan::{AggExpr, CmpOp, FilterExpr, LogicalPlan, PlanNode};
 pub use dialect::RustafariDialect;
 
 use rustafari_core::{Result, RustafariError};

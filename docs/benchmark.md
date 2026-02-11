@@ -22,7 +22,7 @@ From the repo root:
 
 ```bash
 cargo build -p rustafari-bench --release
-cargo run -p rustafari-bench --release -- --table-size 10000 --time 10
+cargo run -p rustafari-bench --release -- oltp --table-size 10000 --time 10
 ```
 
 **Options** (match these with sysbench where possible):

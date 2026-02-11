@@ -10,7 +10,7 @@ pub mod columnar;
 pub use page::{PageId, Page, PAGE_SIZE};
 pub use wal::{WalRecord, WalWriter};
 pub use table_store::{TableStore, RowId};
-pub use columnar::{ColumnChunk, ColumnarChunk, ColumnarStore};
+pub use columnar::{ColumnChunk, ColumnarChunk, ColumnarStore, COLUMNAR_CHUNK_SIZE};
 
 use rustafari_core::{Row, TableId};
 

@@ -113,13 +113,13 @@ cargo run -p rustafari-server -- query --sql "SELECT 1"
 
 ## Benchmarking
 
-A **sysbench-style OLTP read-only** benchmark lets you compare RustafariDB with MySQL and PostgreSQL:
+- **OLTP** (sysbench-style): compare with MySQL and PostgreSQL  
+  `cargo run -p rustafari-bench --release -- oltp --table-size 10000 --time 10`  
+  See **[docs/benchmark.md](docs/benchmark.md)**.
 
-```bash
-cargo run -p rustafari-bench --release -- --table-size 10000 --time 10
-```
-
-See **[docs/benchmark.md](docs/benchmark.md)** for running the same workload with sysbench on MySQL and PostgreSQL and comparing results.
+- **OLAP** (columnar SUM/COUNT/AVG): compare with SingleStore, StarRocks, Snowflake, Databricks  
+  `cargo run -p rustafari-bench --release -- olap --rows 1000000 --queries 100`  
+  See **[docs/benchmark-olap.md](docs/benchmark-olap.md)**.
 
 ## Configuration
 
