@@ -87,17 +87,52 @@ pub fn execute_plan(state: &SessionState, plan: &LogicalPlan) -> Result<Executio
             ))
         }
         PlanNode::Filter { input, predicate } => {
-            let sub = execute_plan(state, &LogicalPlan { root: *input.clone() })?;
-            let rows = match sub {
-                ExecutionResult::Rows(r) => r,
-                _ => return Err(rustafari_core::RustafariError::Execution("filter expects rows".into())),
-            };
             let meta = scan_meta(state, input)?;
-            let filtered: Vec<Row> = rows
-                .into_iter()
-                .filter(|row| eval_predicate(row, predicate, &meta.schema))
-                .collect();
-            Ok(ExecutionResult::Rows(filtered))
+            // Use index when predicate is id = v or id >= v1 AND id <= v2 and we have an index on id.
+            let rows = if let (PlanNode::Scan { table: _, namespace: _ }, Some(lookup)) = (
+                input.as_ref(),
+                predicate_to_id_lookup(predicate, "id"),
+            ) {
+                if let Some(index) = state.get_index(meta.id, "id") {
+                    let row_ids: Vec<RowId> = match lookup {
+                        IdLookup::Point(v) => {
+                            let key = IndexKey::from_value(&v)?;
+                            index.get(&key)?
+                        }
+                        IdLookup::RangeInclusive(v1, v2) => {
+                            let start = IndexKey::from_value(&v1)?;
+                            let end = IndexKey::from_value(&v2)?;
+                            index.range(&start, Some(&end))?
+                        }
+                    };
+                    let mut out = Vec::with_capacity(row_ids.len());
+                    for rid in row_ids {
+                        if let Some(row) = state.row_store.get(meta.id, rid)? {
+                            out.push(row);
+                        }
+                    }
+                    out
+                } else {
+                    let sub = execute_plan(state, &LogicalPlan { root: *input.clone() })?;
+                    match sub {
+                        ExecutionResult::Rows(r) => r
+                            .into_iter()
+                            .filter(|row| eval_predicate(row, predicate, &meta.schema))
+                            .collect(),
+                        _ => return Err(rustafari_core::RustafariError::Execution("filter expects rows".into())),
+                    }
+                }
+            } else {
+                let sub = execute_plan(state, &LogicalPlan { root: *input.clone() })?;
+                let rows = match sub {
+                    ExecutionResult::Rows(r) => r,
+                    _ => return Err(rustafari_core::RustafariError::Execution("filter expects rows".into())),
+                };
+                rows.into_iter()
+                    .filter(|row| eval_predicate(row, predicate, &meta.schema))
+                    .collect()
+            };
+            Ok(ExecutionResult::Rows(rows))
         }
         PlanNode::Project { input, columns } => {
             let sub = execute_plan(state, &LogicalPlan { root: *input.clone() })?;
@@ -133,10 +168,16 @@ pub fn execute_plan(state: &SessionState, plan: &LogicalPlan) -> Result<Executio
             let ns = namespace.as_deref().unwrap_or("public");
             let meta = state.table_meta(Some(ns), table)?
                 .ok_or_else(|| rustafari_core::RustafariError::TableNotFound(format!("{}.{}", ns, table)))?;
+            let id_col = meta.schema.column_index("id");
             let mut count = 0u64;
             for row_vals in values {
                 let row = Row::new(row_vals.clone());
-                state.row_store.insert(meta.id, row)?;
+                let row_id = state.row_store.insert(meta.id, row)?;
+                if let (Some(id_idx), Some(index)) = (id_col, state.get_index(meta.id, "id")) {
+                    if let Some(id_val) = row_vals.get(id_idx) {
+                        let _ = index.insert(IndexKey::from_value(id_val)?, row_id);
+                    }
+                }
                 count += 1;
             }
             Ok(ExecutionResult::RowsAffected(count))
@@ -149,7 +190,13 @@ pub fn execute_plan(state: &SessionState, plan: &LogicalPlan) -> Result<Executio
                     .map(|(name, ty)| rustafari_core::Column::new(name.clone(), ty.clone(), true))
                     .collect(),
             );
-            state.catalog.write().create_table(ns, table.clone(), schema, None);
+            let meta = state.catalog.write().create_table(ns, table.clone(), schema, None);
+            if meta.schema.column_index("id").is_some() {
+                state
+                    .index_store
+                    .write()
+                    .insert((meta.id, "id".to_string()), Arc::new(BTreeIndex::new()));
+            }
             Ok(ExecutionResult::RowsAffected(0))
         }
         PlanNode::DropTable { table, namespace } => {
@@ -159,6 +206,7 @@ pub fn execute_plan(state: &SessionState, plan: &LogicalPlan) -> Result<Executio
                 .clone();
             state.row_store.drop_table(meta.id)?;
             state.columnar_store.drop_table(meta.id)?;
+            state.index_store.write().retain(|(tid, _), _| *tid != meta.id);
             state.catalog.write().drop_table(ns, table);
             Ok(ExecutionResult::RowsAffected(0))
         }

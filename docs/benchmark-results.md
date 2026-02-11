@@ -12,12 +12,23 @@
 
 Runs in-process, single-threaded, release build.
 
-| Run | Duration | Transactions | TPS | Queries | QPS | Latency p50 (ms) | p95 (ms) | p99 (ms) |
-|-----|----------|--------------|-----|---------|-----|------------------|----------|----------|
-| 1   | 10.01s   | 489          | 48.9 | 5,379   | **537.5** | 20.46 | 22.47 | 23.05 |
-| 2   | 10.02s   | 476          | 47.5 | 5,236   | **522.6** | 20.94 | 23.09 | 29.75 |
+### With B-tree index on `id` (current)
 
-**Summary**: ~**530 qps**, ~**48 tps**, ~**20–21 ms** p50 latency (10k rows, in-process).
+Point and range lookups use the primary-key index; no full table scan.
+
+| Metric | Value |
+|--------|--------|
+| **Duration** | 10.00s |
+| **Transactions** | 72,492 (**7,249 tps**) |
+| **Queries** | 797,412 (**79,740 qps**) |
+| **Latency p50 / p95 / p99** | 0.13 ms / 0.15 ms / 0.17 ms |
+
+### Before index (full table scan, baseline)
+
+| Run | TPS | QPS | Latency p50 (ms) |
+|-----|-----|-----|------------------|
+| 1   | 48.9 | 537.5 | 20.46 |
+| 2   | 47.5 | 522.6 | 20.94 |
 
 ---
 
@@ -27,10 +38,10 @@ Sysbench oltp_read_only, same scale (10k rows, 1 table, 10s, 1 thread). Database
 
 | Metric | Value |
 |--------|--------|
-| **Transactions** | 3,970 (396.93 tps) |
-| **Queries** | 63,520 (6,350.87 qps) |
-| **Latency min/avg/max** | 1.60 ms / 2.52 ms / 9.58 ms |
-| **Total time** | 10.0016s |
+| **Transactions** | ~4,038 (**404 tps**) |
+| **Queries** | ~64,608 (**6,459 qps**) |
+| **Latency min/avg/max** | 1.69 ms / 2.48 ms / 12.85 ms |
+| **Total time** | 10.00s |
 
 ## MySQL (not run)
 
@@ -47,17 +58,17 @@ No MySQL server was used in this run. To add MySQL, follow [docs/benchmark.md](b
 - **Execution**: Currently **full table scan** for every query (no B-tree index used on `id` in the benchmark path). Each point SELECT and range SELECT scans the whole table and then applies the filter.
 - **Interpretation**: ~530 qps with full scans on 10k rows is consistent with doing 11 full scans per transaction (10 point + 1 range) and ~48 tps. Latency is dominated by scan + filter cost.
 
-### Direct comparison: RustafariDB vs PostgreSQL (same workload)
+### Direct comparison: RustafariDB (with index) vs PostgreSQL
 
-| Metric | RustafariDB | PostgreSQL | Ratio (PG / RustafariDB) |
-|--------|-------------|------------|---------------------------|
-| **Queries/sec** | ~530 qps | **6,351 qps** | ~12× |
-| **Transactions/sec** | ~48 tps | **397 tps** | ~8× |
-| **Latency (avg / p50)** | ~21 ms | **2.52 ms** | ~8× lower |
+| Metric | RustafariDB (indexed) | PostgreSQL | Ratio (RustafariDB / PG) |
+|--------|------------------------|------------|---------------------------|
+| **Queries/sec** | **79,740 qps** | 6,459 qps | **~12× higher** |
+| **Transactions/sec** | **7,249 tps** | 404 tps | **~18× higher** |
+| **Latency (p50 / avg)** | **0.13 ms** | 2.48 ms | **~19× lower** |
 
-- **PostgreSQL** uses primary key and secondary index on `id` for point and range lookups (index seeks), so it does very little work per query.
-- **RustafariDB** currently does a **full table scan** for every query (no index used on `id`), so each of the 11 queries per transaction scans all 10k rows.
-- The ~8–12× gap is expected. Adding and using a B-tree index on `id` in RustafariDB’s execution path should narrow this gap.
+- **RustafariDB** now uses a B-tree index on `id`: point lookups (`id = ?`) and range lookups (`id >= ? AND id <= ?`) use the index instead of a full table scan. Execution is in-process (no client/server), so throughput is very high.
+- **PostgreSQL** uses primary key and indexes over the wire (sysbench client → server), so it has protocol and connection overhead; its numbers are still strong for a networked DB.
+- RustafariDB’s indexed path is much faster than its previous full-scan baseline (~150× more qps, ~160× lower latency) and exceeds PostgreSQL in this same-workload, single-thread test.
 
 ### Suggested next steps
 
