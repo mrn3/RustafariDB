@@ -111,6 +111,16 @@ cargo run -p rustafari-server -- query --sql "SELECT 1"
 - **Inverted** – in-memory term → row IDs; optional Tantivy for production full-text
 - **Vector** – dimension fixed; `insert(row_id, vector)`, `search(query, top_k)`; replace with HNSW for scale
 
+## Benchmarking
+
+A **sysbench-style OLTP read-only** benchmark lets you compare RustafariDB with MySQL and PostgreSQL:
+
+```bash
+cargo run -p rustafari-bench --release -- --table-size 10000 --time 10
+```
+
+See **[docs/benchmark.md](docs/benchmark.md)** for running the same workload with sysbench on MySQL and PostgreSQL and comparing results.
+
 ## Configuration
 
 - Default namespace: `public`

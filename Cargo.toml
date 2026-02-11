@@ -9,4 +9,5 @@ members = [
     "crates/rustafari-executor",
     "crates/rustafari-lake",
     "crates/rustafari-server",
+    "crates/rustafari-bench",
 ]

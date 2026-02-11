@@ -104,6 +104,15 @@ fn expr_to_value(expr: &Expr) -> Result<Value> {
             sqlparser::ast::Value::SingleQuotedString(s) => Ok(Value::String(s.clone())),
             sqlparser::ast::Value::Boolean(b) => Ok(Value::Bool(*b)),
             sqlparser::ast::Value::Null => Ok(Value::Null),
+            sqlparser::ast::Value::UnQuotedString(s) => {
+                if let Ok(n) = s.parse::<i64>() {
+                    Ok(Value::Int64(n))
+                } else if let Ok(f) = s.parse::<f64>() {
+                    Ok(Value::Float64(f))
+                } else {
+                    Ok(Value::String(s.clone()))
+                }
+            }
             _ => Err(RustafariError::Parse("unsupported literal in VALUES".into())),
         },
         _ => Err(RustafariError::Parse("only literals supported in VALUES".into())),
@@ -112,66 +121,71 @@ fn expr_to_value(expr: &Expr) -> Result<Value> {
 
 fn expr_to_filter(expr: &Expr) -> Result<FilterExpr> {
     match expr {
-        Expr::BinaryOp { left, op, right } => {
-            let l = expr_to_filter(left)?;
-            let r = expr_to_filter(right)?;
-            match op {
-                sqlparser::ast::BinaryOperator::And => Ok(FilterExpr::And(Box::new(l), Box::new(r))),
-                sqlparser::ast::BinaryOperator::Or => Ok(FilterExpr::Or(Box::new(l), Box::new(r))),
-                sqlparser::ast::BinaryOperator::Eq => {
-                    if let (Expr::Identifier(id), Expr::Value(v)) = (left.as_ref(), right.as_ref()) {
-                        let value = expr_to_value(&Expr::Value(v.clone()))?;
-                        return Ok(FilterExpr::Cmp {
-                            col: id.value.clone(),
-                            op: CmpOp::Eq,
-                            value,
-                        });
-                    }
-                    if let (Expr::Value(v), Expr::Identifier(id)) = (left.as_ref(), right.as_ref()) {
-                        let value = expr_to_value(&Expr::Value(v.clone()))?;
-                        return Ok(FilterExpr::Cmp {
-                            col: id.value.clone(),
-                            op: CmpOp::Eq,
-                            value,
-                        });
-                    }
-                    Err(RustafariError::Parse("comparison: expected column and literal".into()))
-                }
-                sqlparser::ast::BinaryOperator::NotEq => {
-                    if let (Expr::Identifier(id), Expr::Value(v)) = (left.as_ref(), right.as_ref()) {
-                        let value = expr_to_value(&Expr::Value(v.clone()))?;
-                        return Ok(FilterExpr::Cmp {
-                            col: id.value.clone(),
-                            op: CmpOp::Ne,
-                            value,
-                        });
-                    }
-                    Err(RustafariError::Parse("comparison: expected column and literal".into()))
-                }
-                sqlparser::ast::BinaryOperator::Gt
-                | sqlparser::ast::BinaryOperator::Lt
-                | sqlparser::ast::BinaryOperator::GtEq
-                | sqlparser::ast::BinaryOperator::LtEq => {
-                    let (id, v) = if let Expr::Identifier(id) = left.as_ref() {
-                        (id.value.clone(), expr_to_value(right)?)
-                    } else if let Expr::Identifier(id) = right.as_ref() {
-                        (id.value.clone(), expr_to_value(left)?)
-                    } else {
-                        return Err(RustafariError::Parse("comparison: expected column".into()));
-                    };
-                    let op = match op {
-                        sqlparser::ast::BinaryOperator::Gt => CmpOp::Gt,
-                        sqlparser::ast::BinaryOperator::Lt => CmpOp::Lt,
-                        sqlparser::ast::BinaryOperator::GtEq => CmpOp::Ge,
-                        sqlparser::ast::BinaryOperator::LtEq => CmpOp::Le,
-                        _ => return Err(RustafariError::Parse("unsupported comparison".into())),
-                    };
-                    Ok(FilterExpr::Cmp { col: id, op, value: v })
-                }
-                _ => Err(RustafariError::Parse("unsupported binary op in WHERE".into())),
+        Expr::BinaryOp { left, op, right } => match op {
+            sqlparser::ast::BinaryOperator::And => {
+                let l = expr_to_filter(left)?;
+                let r = expr_to_filter(right)?;
+                Ok(FilterExpr::And(Box::new(l), Box::new(r)))
             }
-        }
+            sqlparser::ast::BinaryOperator::Or => {
+                let l = expr_to_filter(left)?;
+                let r = expr_to_filter(right)?;
+                Ok(FilterExpr::Or(Box::new(l), Box::new(r)))
+            }
+            sqlparser::ast::BinaryOperator::Eq => {
+                if let (Expr::Identifier(id), Expr::Value(v)) = (left.as_ref(), right.as_ref()) {
+                    let value = expr_to_value(&Expr::Value(v.clone()))?;
+                    return Ok(FilterExpr::Cmp {
+                        col: id.value.clone(),
+                        op: CmpOp::Eq,
+                        value,
+                    });
+                }
+                if let (Expr::Value(v), Expr::Identifier(id)) = (left.as_ref(), right.as_ref()) {
+                    let value = expr_to_value(&Expr::Value(v.clone()))?;
+                    return Ok(FilterExpr::Cmp {
+                        col: id.value.clone(),
+                        op: CmpOp::Eq,
+                        value,
+                    });
+                }
+                Err(RustafariError::Parse("comparison: expected column and literal".into()))
+            }
+            sqlparser::ast::BinaryOperator::NotEq => {
+                if let (Expr::Identifier(id), Expr::Value(v)) = (left.as_ref(), right.as_ref()) {
+                    let value = expr_to_value(&Expr::Value(v.clone()))?;
+                    return Ok(FilterExpr::Cmp {
+                        col: id.value.clone(),
+                        op: CmpOp::Ne,
+                        value,
+                    });
+                }
+                Err(RustafariError::Parse("comparison: expected column and literal".into()))
+            }
+            sqlparser::ast::BinaryOperator::Gt
+            | sqlparser::ast::BinaryOperator::Lt
+            | sqlparser::ast::BinaryOperator::GtEq
+            | sqlparser::ast::BinaryOperator::LtEq => {
+                let (id, v) = if let Expr::Identifier(id) = left.as_ref() {
+                    (id.value.clone(), expr_to_value(right)?)
+                } else if let Expr::Identifier(id) = right.as_ref() {
+                    (id.value.clone(), expr_to_value(left)?)
+                } else {
+                    return Err(RustafariError::Parse("comparison: expected column".into()));
+                };
+                let op = match op {
+                    sqlparser::ast::BinaryOperator::Gt => CmpOp::Gt,
+                    sqlparser::ast::BinaryOperator::Lt => CmpOp::Lt,
+                    sqlparser::ast::BinaryOperator::GtEq => CmpOp::Ge,
+                    sqlparser::ast::BinaryOperator::LtEq => CmpOp::Le,
+                    _ => return Err(RustafariError::Parse("unsupported comparison".into())),
+                };
+                Ok(FilterExpr::Cmp { col: id, op, value: v })
+            }
+            _ => Err(RustafariError::Parse("unsupported binary op in WHERE".into())),
+        },
         Expr::Value(sqlparser::ast::Value::Boolean(b)) => Ok(FilterExpr::Literal(*b)),
+        Expr::Nested(inner) => expr_to_filter(inner),
         _ => Err(RustafariError::Parse("unsupported expression in WHERE".into())),
     }
 }

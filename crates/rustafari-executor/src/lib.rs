@@ -9,15 +9,26 @@ pub mod columnar;
 pub use sql_executor::SqlExecutor;
 
 use rustafari_core::{Catalog, ColumnType, Result, Row, Schema, TableMeta, Value};
+use rustafari_index::{BTreeIndex, IndexKey};
 use rustafari_sql::{CmpOp, FilterExpr, LogicalPlan, PlanNode};
-use rustafari_storage::{ColumnarStore, TableStore};
+use rustafari_storage::{ColumnarStore, RowId, TableStore};
+use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Database session state: catalog + row store + columnar store.
+/// Index lookup derived from a predicate on an indexed column (e.g. id).
+#[derive(Debug)]
+enum IdLookup {
+    Point(Value),
+    RangeInclusive(Value, Value),
+}
+
+/// Database session state: catalog + row store + columnar store + indexes.
 pub struct SessionState {
     pub catalog: Arc<parking_lot::RwLock<Catalog>>,
     pub row_store: Arc<TableStore>,
     pub columnar_store: Arc<ColumnarStore>,
+    /// (table_id, column_name) -> B-tree index (e.g. primary key on id).
+    index_store: Arc<parking_lot::RwLock<HashMap<(rustafari_core::TableId, String), Arc<BTreeIndex>>>>,
 }
 
 impl SessionState {
@@ -26,7 +37,15 @@ impl SessionState {
             catalog: Arc::new(parking_lot::RwLock::new(Catalog::new())),
             row_store: Arc::new(TableStore::new()),
             columnar_store: Arc::new(ColumnarStore::new()),
+            index_store: Arc::new(parking_lot::RwLock::new(HashMap::new())),
         }
+    }
+
+    fn get_index(&self, table_id: rustafari_core::TableId, column: &str) -> Option<Arc<BTreeIndex>> {
+        self.index_store
+            .read()
+            .get(&(table_id, column.to_string()))
+            .cloned()
     }
 
     pub fn table_meta(&self, namespace: Option<&str>, table: &str) -> Result<Option<TableMeta>> {
@@ -161,6 +180,24 @@ pub fn execute_plan(state: &SessionState, plan: &LogicalPlan) -> Result<Executio
                 .collect();
             Ok(ExecutionResult::Rows(rows))
         }
+    }
+}
+
+/// If the predicate is a point or range lookup on the given column, return it for index use.
+fn predicate_to_id_lookup(pred: &FilterExpr, column: &str) -> Option<IdLookup> {
+    match pred {
+        FilterExpr::Cmp { col, op: CmpOp::Eq, value } if col == column => Some(IdLookup::Point(value.clone())),
+        FilterExpr::And(a, b) => {
+            let range = match (a.as_ref(), b.as_ref()) {
+                (FilterExpr::Cmp { col: c1, op: CmpOp::Ge, value: v1 }, FilterExpr::Cmp { col: c2, op: CmpOp::Le, value: v2 })
+                    if c1 == column && c2 == column => Some((v1.clone(), v2.clone())),
+                (FilterExpr::Cmp { col: c1, op: CmpOp::Le, value: v1 }, FilterExpr::Cmp { col: c2, op: CmpOp::Ge, value: v2 })
+                    if c1 == column && c2 == column => Some((v2.clone(), v1.clone())),
+                _ => None,
+            };
+            range.map(|(v1, v2)| IdLookup::RangeInclusive(v1, v2))
+        }
+        _ => None,
     }
 }
 

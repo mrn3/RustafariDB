@@ -1,0 +1,21 @@
+[package]
+name = "rustafari-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Sysbench-style OLTP benchmark for RustafariDB (and comparison with MySQL/PostgreSQL)"
+
+[[bin]]
+name = "rustafari-bench"
+path = "src/main.rs"
+
+[dependencies]
+rustafari-core = { path = "../rustafari-core" }
+rustafari-storage = { path = "../rustafari-storage" }
+rustafari-sql = { path = "../rustafari-sql" }
+rustafari-executor = { path = "../rustafari-executor" }
+rustafari-index = { path = "../rustafari-index" }
+rustafari-document = { path = "../rustafari-document" }
+rustafari-lake = { path = "../rustafari-lake" }
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+anyhow = "1.0"
