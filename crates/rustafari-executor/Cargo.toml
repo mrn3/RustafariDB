@@ -1,0 +1,17 @@
+[package]
+name = "rustafari-executor"
+version = "0.1.0"
+edition = "2021"
+description = "Query execution engine: row and columnar for RustafariDB"
+
+[dependencies]
+rustafari-core = { path = "../rustafari-core" }
+rustafari-storage = { path = "../rustafari-storage" }
+rustafari-index = { path = "../rustafari-index" }
+rustafari-sql = { path = "../rustafari-sql" }
+rustafari-document = { path = "../rustafari-document" }
+arrow = { version = "55", features = ["json"] }
+thiserror = "1.0"
+anyhow = "1.0"
+async-trait = "0.1"
+parking_lot = "0.12"

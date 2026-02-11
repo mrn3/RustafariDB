@@ -1,0 +1,25 @@
+{
+  "namespaces": [
+    [
+      "public",
+      0
+    ]
+  ],
+  "tables": [
+    {
+      "id": 2,
+      "namespace_id": 0,
+      "name": "users",
+      "schema": {
+        "columns": [
+          {
+            "name": "id",
+            "data_type": "BigInt",
+            "nullable": true
+          }
+        ]
+      },
+      "storage_format": "row"
+    }
+  ]
+}

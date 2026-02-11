@@ -1,0 +1,11 @@
+[package]
+name = "rustafari-sql"
+version = "0.1.0"
+edition = "2021"
+description = "SQL parser and logical plan for RustafariDB"
+
+[dependencies]
+rustafari-core = { path = "../rustafari-core" }
+sqlparser = "0.45"
+thiserror = "1.0"
+anyhow = "1.0"

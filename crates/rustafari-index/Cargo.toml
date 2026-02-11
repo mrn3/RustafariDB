@@ -1,0 +1,12 @@
+[package]
+name = "rustafari-index"
+version = "0.1.0"
+edition = "2021"
+description = "B-tree, inverted (full-text), and vector indexes for RustafariDB"
+
+[dependencies]
+rustafari-core = { path = "../rustafari-core" }
+rustafari-storage = { path = "../rustafari-storage" }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+parking_lot = "0.12"

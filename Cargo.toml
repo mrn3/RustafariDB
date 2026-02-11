@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rustafari-core",
+    "crates/rustafari-storage",
+    "crates/rustafari-index",
+    "crates/rustafari-sql",
+    "crates/rustafari-document",
+    "crates/rustafari-executor",
+    "crates/rustafari-lake",
+    "crates/rustafari-server",
+]

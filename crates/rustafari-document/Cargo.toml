@@ -1,0 +1,13 @@
+[package]
+name = "rustafari-document"
+version = "0.1.0"
+edition = "2021"
+description = "MongoDB-style document query API and parser for RustafariDB"
+
+[dependencies]
+rustafari-core = { path = "../rustafari-core" }
+rustafari-storage = { path = "../rustafari-storage" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
