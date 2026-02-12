@@ -1,14 +1,45 @@
 # OLAP Benchmark: RustafariDB vs Analytical Databases
 
-This guide describes how to run **analytical (OLAP)** benchmarks so you can compare RustafariDB with **SingleStore**, **StarRocks**, **Snowflake**, and **Databricks** on aggregation workloads (SUM, COUNT, AVG over large tables).
+This guide describes how to run **analytical (OLAP)** benchmarks and compares RustafariDB with **SingleStore**, **StarRocks**, **Snowflake**, and **Databricks** using a simple aggregation workload and references to popular benchmarks (TPC-H).
 
-## Workload
+**Quick start (RustafariDB):**  
+`cargo run -p rustafari-bench --release -- olap --rows 1000000 --queries 100`
+
+## Workload (simple aggregation)
 
 - **Schema**: One table with `id BIGINT`, `key_col BIGINT`, `value_col BIGINT`.
-- **Queries**: `SELECT SUM(value_col), COUNT(*), AVG(value_col) FROM table`
-- **Metrics**: Query latency (p50, p95, p99), queries per second, effective rows scanned per second.
+- **Query**: `SELECT SUM(value_col), COUNT(*), AVG(value_col) FROM table`
+- **Metrics**: Query latency (p50, p95, p99), queries per second, rows scanned per second.
 
 Use the **same row count** and **same query** across systems for a fair comparison.
+
+---
+
+## Performance comparison (1M rows, simple aggregation)
+
+Benchmark: **1M rows**, **100 runs** of `SELECT SUM(value_col), COUNT(*), AVG(value_col) FROM olap_bench`.  
+RustafariDB run: release build, single process (in-memory columnar store).
+
+| System        | Latency p50 (ms) | Latency p95 (ms) | Latency p99 (ms) | Q/s   | Rows/s (agg) | Notes              |
+|---------------|------------------|------------------|------------------|-------|--------------|--------------------|
+| **RustafariDB** | **19.2**         | **23.6**         | **27.1**         | **51** | **~51M**     | In-process, 1M rows |
+| SingleStore  | —                | —                | —                | —      | —            | Run same workload; see below |
+| StarRocks    | —                | —                | —                | —      | —            | Run same workload; see below |
+| Snowflake    | —                | —                | —                | —      | —            | Run same workload; see below |
+| Databricks   | —                | —                | —                | —      | —            | Run same workload; see below |
+
+*Fill in the other rows by running the same schema and query on each system (1M rows, 100 queries, disable result cache where applicable).*
+
+### Popular OLAP benchmarks (TPC-H, TPC-DS)
+
+- **TPC-H**: Industry-standard decision-support benchmark; 8 tables, 22 queries, scale factor (SF) = data size (e.g. SF10 ≈ 10 GB).  
+  - **TPC-H Q1**: Full scan of `lineitem` with `SUM`/`AVG`/`COUNT` and `GROUP BY l_returnflag, l_linestatus` — closest to our simple aggregation.  
+  - Public comparisons (different scales/configs, not directly comparable to RustafariDB):  
+    - **Datamonkey (2022)**: [TPC-H SF10](https://datamonkeysite.com/2022/01/07/benchmark-snowflake-bigquery-singlestore-and-databricks-using-tpc-h-sf10/) — Snowflake, SingleStore, Databricks, BigQuery; warm cache, no result cache; Snowflake and SingleStore showed strong performance; Databricks SF10 updated later.  
+    - **StarRocks**: [TPC-H SF100 (100 GB)](https://docs.starrocks.io/docs/benchmarking/TPC-H_Benchmarking) — 22-query total runtime ~16.6 s (native), ~92 s (Hive external), vs Trino ~187 s; lineitem ~600M rows.  
+- **TPC-DS**: 99 queries, more complex; often used at 1 TB+ (e.g. Fivetran warehouse benchmark: Snowflake, Databricks, Redshift, BigQuery).
+
+RustafariDB does not run full TPC-H (no GROUP BY in executor yet); the **simple aggregation** workload above is the closest comparable test. For “apples-to-apples” with other systems, run the **same 1M-row SUM/COUNT/AVG** workload on each platform and record latency and Q/s.
 
 ---
 
@@ -162,19 +193,11 @@ Use the **same**:
 - **Query**: `SELECT SUM(value_col), COUNT(*), AVG(value_col) FROM olap_bench`
 - **Environment**: single node vs cluster; same machine class if possible
 
-Then compare:
-
-| System        | Rows   | Q/s  | Latency p50 (ms) | Latency p99 (ms) | Notes        |
-|---------------|--------|------|------------------|------------------|--------------|
-| RustafariDB   | 1M     | …    | …                | …                | In-process   |
-| SingleStore   | 1M     | …    | …                | …                | Network hop  |
-| StarRocks     | 1M     | …    | …                | …                | Network hop  |
-| Snowflake     | 1M     | …    | …                | …                | Cloud        |
-| Databricks    | 1M     | …    | …                | …                | Cluster      |
+Then fill in the **comparison table** at the top of this doc (or your own spreadsheet). Use the same row count (e.g. 1M) and disable **result cache** where applicable (Snowflake: `ALTER SESSION SET USE_CACHED_RESULT = FALSE`; Databricks: `SET use_cached_result = false`).
 
 **Notes:**
 
-- RustafariDB runs **in-process** (no client/server), so latency is lower than over-the-wire systems. For a more level comparison, run other DBs on localhost with a single node.
+- RustafariDB runs **in-process** (no client/server), so latency is typically lower than over-the-wire systems. For a more level comparison, run other DBs on localhost with a single node.
 - For **billions of rows**, ensure enough RAM or use disk-backed columnar storage; RustafariDB’s columnar store is currently in-memory with chunked batches (default 100k rows per chunk).
 
 ---

@@ -7,22 +7,7 @@
   ],
   "tables": [
     {
-      "id": 2,
-      "namespace_id": 0,
-      "name": "users",
-      "schema": {
-        "columns": [
-          {
-            "name": "id",
-            "data_type": "BigInt",
-            "nullable": true
-          }
-        ]
-      },
-      "storage_format": "row"
-    },
-    {
-      "id": 3,
+      "id": 4,
       "namespace_id": 0,
       "name": "olap_test",
       "schema": {
@@ -47,7 +32,22 @@
       "storage_format": "row"
     },
     {
-      "id": 4,
+      "id": 2,
+      "namespace_id": 0,
+      "name": "users",
+      "schema": {
+        "columns": [
+          {
+            "name": "id",
+            "data_type": "BigInt",
+            "nullable": true
+          }
+        ]
+      },
+      "storage_format": "row"
+    },
+    {
+      "id": 3,
       "namespace_id": 0,
       "name": "olap_test",
       "schema": {
