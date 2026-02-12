@@ -29,6 +29,17 @@ pub enum PlanNode {
         input: Box<PlanNode>,
         aggs: Vec<AggExpr>,
     },
+    /// Grouped aggregation (GROUP BY cols): one row per group.
+    GroupBy {
+        input: Box<PlanNode>,
+        group_by: Vec<String>,
+        aggs: Vec<AggExpr>,
+    },
+    /// Sort rows by columns (ORDER BY).
+    OrderBy {
+        input: Box<PlanNode>,
+        columns: Vec<(String, bool)>,
+    },
     /// Limit rows.
     Limit {
         input: Box<PlanNode>,
@@ -207,6 +218,14 @@ fn expr_to_filter(expr: &Expr) -> Result<FilterExpr> {
     }
 }
 
+fn expr_to_group_by_col(expr: &Expr) -> Option<String> {
+    if let Expr::Identifier(id) = expr {
+        Some(id.value.clone())
+    } else {
+        None
+    }
+}
+
 fn query_to_plan(query: Query) -> Result<LogicalPlan> {
     let SetExpr::Select(sel) = *query.body else {
         return Err(RustafariError::Parse("only SELECT supported in query".into()));
@@ -226,8 +245,24 @@ fn query_to_plan(query: Query) -> Result<LogicalPlan> {
             predicate: expr_to_filter(where_expr)?,
         };
     }
-    // Check for aggregate-only projection (e.g. SELECT SUM(x), COUNT(*) FROM t).
-    if let Some(aggs) = projection_as_aggs(&sel.projection) {
+    // GROUP BY: collect group columns and aggregates from projection.
+    let group_by_cols: Vec<String> = match &sel.group_by {
+        sqlparser::ast::GroupByExpr::Expressions(exprs) => exprs
+            .iter()
+            .filter_map(expr_to_group_by_col)
+            .collect(),
+        sqlparser::ast::GroupByExpr::All => {
+            return Err(RustafariError::Parse("GROUP BY ALL not supported".into()));
+        }
+    };
+    if !group_by_cols.is_empty() {
+        let aggs = projection_as_aggs_with_group(&sel.projection, &group_by_cols)?;
+        root = PlanNode::GroupBy {
+            input: Box::new(root),
+            group_by: group_by_cols,
+            aggs,
+        };
+    } else if let Some(aggs) = projection_as_aggs(&sel.projection) {
         root = PlanNode::Aggregate {
             input: Box::new(root),
             aggs,
@@ -248,6 +283,25 @@ fn query_to_plan(query: Query) -> Result<LogicalPlan> {
             root = PlanNode::Project {
                 input: Box::new(root),
                 columns,
+            };
+        }
+    }
+    // ORDER BY
+    if !query.order_by.is_empty() {
+        let order_cols: Vec<(String, bool)> = query
+            .order_by
+            .iter()
+            .map(|o| {
+                let col = expr_to_group_by_col(&o.expr).unwrap_or_default();
+                let asc = o.asc.unwrap_or(true);
+                (col, asc)
+            })
+            .filter(|(c, _)| !c.is_empty())
+            .collect();
+        if !order_cols.is_empty() {
+            root = PlanNode::OrderBy {
+                input: Box::new(root),
+                columns: order_cols,
             };
         }
     }
@@ -319,6 +373,30 @@ fn projection_as_aggs(projection: &[SelectItem]) -> Option<Vec<AggExpr>> {
         return None;
     }
     Some(aggs)
+}
+
+/// For GROUP BY: projection is group columns + aggregates. Return only the aggs (in order).
+fn projection_as_aggs_with_group(
+    projection: &[SelectItem],
+    group_by: &[String],
+) -> Result<Vec<AggExpr>> {
+    let mut aggs = Vec::new();
+    for p in projection {
+        let expr = match p {
+            SelectItem::UnnamedExpr(e) => e,
+            _ => return Err(RustafariError::Parse("GROUP BY projection: only column and aggregate".into())),
+        };
+        match expr {
+            Expr::Identifier(id) => {
+                if !group_by.contains(&id.value) {
+                    return Err(RustafariError::Parse("GROUP BY projection: non-group column must be aggregated".into()));
+                }
+            }
+            Expr::Function(f) => aggs.push(expr_to_agg(f)?),
+            _ => return Err(RustafariError::Parse("GROUP BY projection: only column and aggregate".into())),
+        }
+    }
+    Ok(aggs)
 }
 
 fn values_from_ast(values: Values) -> Result<Vec<Vec<Value>>> {

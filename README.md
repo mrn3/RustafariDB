@@ -119,6 +119,9 @@ cargo run -p rustafari-server -- query --sql "SELECT 1"
 
 - **OLAP** (columnar SUM/COUNT/AVG): compare with SingleStore, StarRocks, Snowflake, Databricks  
   `cargo run -p rustafari-bench --release -- olap --rows 1000000 --queries 100`  
+- **TPC-H** (lineitem + Q1, GROUP BY + ORDER BY):  
+  - SF 0.01 (~60k rows): `tpch --scale 0.01 --runs 20`  
+  - **SF 100** (~600M rows, same as StarRocks): `tpch --scale 100 --runs 5` — needs **~32+ GB RAM**, load ~90 min ([scripts/run_tpch_sf100.sh](scripts/run_tpch_sf100.sh))  
   See **[docs/benchmark-olap.md](docs/benchmark-olap.md)**.
 
 ## Configuration

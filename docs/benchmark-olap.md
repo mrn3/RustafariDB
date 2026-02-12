@@ -39,7 +39,23 @@ RustafariDB run: release build, single process (in-memory columnar store).
     - **StarRocks**: [TPC-H SF100 (100 GB)](https://docs.starrocks.io/docs/benchmarking/TPC-H_Benchmarking) — 22-query total runtime ~16.6 s (native), ~92 s (Hive external), vs Trino ~187 s; lineitem ~600M rows.  
 - **TPC-DS**: 99 queries, more complex; often used at 1 TB+ (e.g. Fivetran warehouse benchmark: Snowflake, Databricks, Redshift, BigQuery).
 
-RustafariDB does not run full TPC-H (no GROUP BY in executor yet); the **simple aggregation** workload above is the closest comparable test. For “apples-to-apples” with other systems, run the **same 1M-row SUM/COUNT/AVG** workload on each platform and record latency and Q/s.
+RustafariDB **runs TPC-H Q1** (GROUP BY and ORDER BY supported). The **simple aggregation** workload is also available. For “apples-to-apples” with other systems, run the **same 1M-row SUM/COUNT/AVG** workload on each platform and record latency and Q/s.
+
+**TPC-H Q1 (same scale as StarRocks):**  
+- **SF 100** (~600M lineitems): run `cargo run -p rustafari-bench --release -- tpch --scale 100 --runs 5`. Requires **~32+ GB RAM**; load at ~115k rows/s takes **~90 min**, then Q1 runs over 600M rows.  
+- **SF 1** (~6M rows, measured): **Q1 p50 ~4.4 s** (load ~48 s at ~124k rows/s).  
+- **SF 0.01** (~60k rows): **Q1 p50 ~35 ms**.
+
+**Comparison (TPC-H Q1):**
+
+| System        | Scale | Lineitem rows | Q1 latency (p50) | Notes                          |
+|---------------|-------|----------------|------------------|--------------------------------|
+| **RustafariDB** | 1     | ~6M            | **~4.4 s**       | Single node, in-memory (measured) |
+| **RustafariDB** | 100   | ~600M          | (run locally)   | Same command `--scale 100`; 32+ GB RAM, ~90 min load |
+| StarRocks     | 100   | ~600M          | ~1.54 s         | [StarRocks SF100](https://docs.starrocks.io/docs/benchmarking/TPC-H_Benchmarking), 4 nodes |
+| Snowflake / SingleStore / Databricks | 10 | ~60M | (see [Datamonkey SF10](https://datamonkeysite.com/2022/01/07/benchmark-snowflake-bigquery-singlestore-and-databricks-using-tpc-h-sf10/)) | Different scale |
+
+For **apples-to-apples at SF 100**, run RustafariDB with `tpch --scale 100 --runs 5` on a machine with 32+ GB RAM and allow 1.5–2 hours; then compare Q1 latency with StarRocks SF100 (~1.54 s).
 
 ---
 

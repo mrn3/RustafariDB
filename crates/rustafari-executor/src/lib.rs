@@ -11,6 +11,7 @@ pub use sql_executor::SqlExecutor;
 use rustafari_core::{Catalog, ColumnType, Result, Row, Schema, TableMeta, Value};
 use rustafari_index::{BTreeIndex, IndexKey};
 use rustafari_sql::{AggExpr, CmpOp, FilterExpr, LogicalPlan, PlanNode};
+use std::collections::BTreeMap;
 use rustafari_storage::{ColumnarChunk, ColumnChunk, ColumnarStore, RowId, TableStore, COLUMNAR_CHUNK_SIZE};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -244,6 +245,61 @@ pub fn execute_plan(state: &SessionState, plan: &LogicalPlan) -> Result<Executio
             }
             Ok(ExecutionResult::Rows(vec![Row::new(result_values)]))
         }
+        PlanNode::GroupBy { input, group_by, aggs } => {
+            let sub = execute_plan(state, &LogicalPlan { root: *input.clone() })?;
+            let rows = match sub {
+                ExecutionResult::Rows(r) => r,
+                _ => return Err(rustafari_core::RustafariError::Execution("GROUP BY input must yield rows".into())),
+            };
+            let meta = scan_meta(state, input)?;
+            let schema = &meta.schema;
+            let group_indices: Vec<usize> = group_by
+                .iter()
+                .map(|c| schema.column_index(c).ok_or_else(|| rustafari_core::RustafariError::Execution(format!("GROUP BY column not found: {}", c))))
+                .collect::<Result<Vec<_>>>()?;
+            let mut groups: BTreeMap<String, (Vec<Value>, Vec<Row>)> = BTreeMap::new();
+            for row in rows {
+                let key_vals: Vec<Value> = group_indices.iter().filter_map(|&i| row.get(i).cloned()).collect();
+                let key = key_vals.iter().map(|v| format!("{:?}", v)).collect::<Vec<_>>().join("\x00");
+                groups.entry(key).or_insert_with(|| (key_vals, Vec::new())).1.push(row);
+            }
+            let mut result_rows = Vec::with_capacity(groups.len());
+            for (_key, (key_vals, group_rows)) in groups {
+                let mut out_row = key_vals;
+                for agg in aggs {
+                    let v = aggregate_over_row_slice(&group_rows, schema, agg)?;
+                    out_row.push(v);
+                }
+                result_rows.push(Row::new(out_row));
+            }
+            Ok(ExecutionResult::Rows(result_rows))
+        }
+        PlanNode::OrderBy { input, columns } => {
+            let sub = execute_plan(state, &LogicalPlan { root: *input.clone() })?;
+            let mut rows = match sub {
+                ExecutionResult::Rows(r) => r,
+                _ => return Err(rustafari_core::RustafariError::Execution("ORDER BY input must yield rows".into())),
+            };
+            let meta = scan_meta(state, input)?;
+            let schema = &meta.schema;
+            let order_indices: Vec<(usize, bool)> = columns
+                .iter()
+                .map(|(c, asc)| {
+                    let i = schema.column_index(c).ok_or_else(|| rustafari_core::RustafariError::Execution(format!("ORDER BY column not found: {}", c)))?;
+                    Ok((i, *asc))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            rows.sort_by(|a, b| {
+                for &(idx, asc) in &order_indices {
+                    let ord = compare_vals(a.get(idx), b.get(idx));
+                    if ord != std::cmp::Ordering::Equal {
+                        return if asc { ord } else { ord.reverse() };
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+            Ok(ExecutionResult::Rows(rows))
+        }
         PlanNode::Insert { table, namespace, columns: _, values } => {
             let ns = namespace.as_deref().unwrap_or("public");
             let meta = state.table_meta(Some(ns), table)?
@@ -336,8 +392,10 @@ fn scan_meta(state: &SessionState, node: &PlanNode) -> Result<TableMeta> {
         PlanNode::Filter { input, .. }
         | PlanNode::Project { input, .. }
         | PlanNode::Limit { input, .. }
-        | PlanNode::Aggregate { input, .. } => return scan_meta(state, input),
-        _ => return Err(rustafari_core::RustafariError::Execution("expected scan under filter/project/aggregate".into())),
+        | PlanNode::Aggregate { input, .. }
+        | PlanNode::GroupBy { input, .. }
+        | PlanNode::OrderBy { input, .. } => return scan_meta(state, input),
+        _ => return Err(rustafari_core::RustafariError::Execution("expected scan under filter/project/aggregate/groupby/orderby".into())),
     };
     let ns = namespace.as_deref().unwrap_or("public");
     state
@@ -388,6 +446,92 @@ fn compare(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::Float64(x), Value::Float64(y)) => x.partial_cmp(y),
         (Value::String(x), Value::String(y)) => Some(x.cmp(y)),
         _ => None,
+    }
+}
+
+fn compare_vals(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
+    match (a, b) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, _) => std::cmp::Ordering::Less,
+        (_, None) => std::cmp::Ordering::Greater,
+        (Some(av), Some(bv)) => compare(av, bv).unwrap_or(std::cmp::Ordering::Equal),
+    }
+}
+
+fn aggregate_over_row_slice(rows: &[Row], schema: &Schema, agg: &AggExpr) -> Result<Value> {
+    match agg {
+        AggExpr::CountStar => Ok(Value::Int64(rows.len() as i64)),
+        AggExpr::Sum { column } => {
+            let idx = schema.column_index(column).ok_or_else(|| rustafari_core::RustafariError::Execution(format!("column not found: {}", column)))?;
+            let mut sum_i = 0i64;
+            let mut sum_f = 0.0f64;
+            let mut has_i = false;
+            let mut has_f = false;
+            for r in rows {
+                if let Some(v) = r.get(idx) {
+                    match v {
+                        Value::Int64(x) => { sum_i = sum_i.saturating_add(*x); has_i = true; }
+                        Value::Float64(x) => { sum_f += *x; has_f = true; }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(if has_f { Value::Float64(sum_f + sum_i as f64) } else if has_i { Value::Int64(sum_i) } else { Value::Null })
+        }
+        AggExpr::Count { column } => {
+            let idx = schema.column_index(column).ok_or_else(|| rustafari_core::RustafariError::Execution(format!("column not found: {}", column)))?;
+            let n = rows.iter().filter(|r| r.get(idx).map(|v| !v.is_null()).unwrap_or(false)).count();
+            Ok(Value::Int64(n as i64))
+        }
+        AggExpr::Avg { column } => {
+            let idx = schema.column_index(column).ok_or_else(|| rustafari_core::RustafariError::Execution(format!("column not found: {}", column)))?;
+            let mut sum = 0.0f64;
+            let mut count = 0usize;
+            for r in rows {
+                if let Some(v) = r.get(idx) {
+                    match v {
+                        Value::Int64(x) => { sum += *x as f64; count += 1; }
+                        Value::Float64(x) => { sum += *x; count += 1; }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(if count == 0 { Value::Null } else { Value::Float64(sum / count as f64) })
+        }
+        AggExpr::Min { column } => {
+            let idx = schema.column_index(column).ok_or_else(|| rustafari_core::RustafariError::Execution(format!("column not found: {}", column)))?;
+            let mut min_i = i64::MAX;
+            let mut min_f = f64::INFINITY;
+            let mut has_i = false;
+            let mut has_f = false;
+            for r in rows {
+                if let Some(v) = r.get(idx) {
+                    match v {
+                        Value::Int64(x) => { min_i = min_i.min(*x); has_i = true; }
+                        Value::Float64(x) => { min_f = min_f.min(*x); has_f = true; }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(if has_f { Value::Float64(min_f) } else if has_i { Value::Int64(min_i) } else { Value::Null })
+        }
+        AggExpr::Max { column } => {
+            let idx = schema.column_index(column).ok_or_else(|| rustafari_core::RustafariError::Execution(format!("column not found: {}", column)))?;
+            let mut max_i = i64::MIN;
+            let mut max_f = f64::NEG_INFINITY;
+            let mut has_i = false;
+            let mut has_f = false;
+            for r in rows {
+                if let Some(v) = r.get(idx) {
+                    match v {
+                        Value::Int64(x) => { max_i = max_i.max(*x); has_i = true; }
+                        Value::Float64(x) => { max_f = max_f.max(*x); has_f = true; }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(if has_f { Value::Float64(max_f) } else if has_i { Value::Int64(max_i) } else { Value::Null })
+        }
     }
 }
 

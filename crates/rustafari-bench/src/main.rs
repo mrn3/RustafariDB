@@ -15,6 +15,8 @@ enum Command {
     Oltp(OltpArgs),
     /// OLAP: SUM/COUNT/AVG over a large columnar-backed table
     Olap(OlapArgs),
+    /// TPC-H: lineitem + Q1 (pricing summary report, GROUP BY + ORDER BY)
+    Tpch(TpchArgs),
 }
 
 /// Sysbench-style OLTP read-only benchmark
@@ -59,6 +61,18 @@ struct OlapArgs {
     report_latency: bool,
 }
 
+/// TPC-H benchmark: lineitem table + Q1 (pricing summary)
+#[derive(Parser)]
+struct TpchArgs {
+    /// Scale factor (lineitem rows ≈ 6M * SF; use 0.01 for ~60k rows)
+    #[arg(long, default_value = "0.01")]
+    scale: f64,
+
+    /// Number of Q1 runs for latency
+    #[arg(long, default_value = "20")]
+    runs: usize,
+}
+
 #[derive(Parser)]
 #[command(name = "rustafari-bench")]
 struct Cli {
@@ -71,6 +85,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Oltp(args) => run_oltp(args),
         Command::Olap(args) => run_olap(args),
+        Command::Tpch(args) => run_tpch(args),
     }
 }
 
@@ -223,5 +238,91 @@ fn run_olap(args: OlapArgs) -> anyhow::Result<()> {
     }
     println!();
     println!("Compare with SingleStore, StarRocks, Snowflake, Databricks (see docs/benchmark-olap.md).");
+    Ok(())
+}
+
+fn run_tpch(args: TpchArgs) -> anyhow::Result<()> {
+    // TPC-H lineitem row count ≈ 6,001,217 * SF. SF 100 ≈ 600M rows (~32+ GB RAM).
+    let num_rows = (6_001_217.0 * args.scale).max(1.0) as usize;
+    println!("RustafariDB TPC-H (lineitem + Q1)");
+    println!("  scale: {}  lineitem rows: {}  Q1 runs: {}", args.scale, num_rows, args.runs);
+    if num_rows > 10_000_000 {
+        println!("  Note: SF 100 (~600M rows) requires ~32+ GB RAM; load may take 30–60+ min.");
+    }
+    println!();
+
+    let state = Arc::new(SessionState::new());
+
+    SqlExecutor::execute(state.as_ref(),
+        "CREATE TABLE lineitem (l_orderkey BIGINT, l_returnflag TEXT, l_linestatus TEXT, l_quantity BIGINT, l_extendedprice DOUBLE PRECISION, l_discount DOUBLE PRECISION, l_tax DOUBLE PRECISION, l_shipdate TEXT)")?;
+
+    const RETURNFLAGS: [&str; 3] = ["A", "N", "R"];
+    const LINESTATUSES: [&str; 2] = ["F", "O"];
+
+    // Larger batches for SF 10+ to speed up load (fewer executor round-trips).
+    let batch = if num_rows > 1_000_000 { 100_000 } else { 10_000 };
+    let progress_every = if num_rows > 10_000_000 { 5_000_000 } else { 500_000 };
+
+    println!("Loading {} lineitem rows (batch {}...)", num_rows, batch);
+    let load_start = Instant::now();
+    for start in (0..num_rows).step_by(batch) {
+        let end = (start + batch).min(num_rows);
+        let mut values: Vec<String> = Vec::with_capacity(batch * 8);
+        for i in start..end {
+            let orderkey = (i + 1) as i64;
+            let rf = RETURNFLAGS[i % 3];
+            let ls = LINESTATUSES[i % 2];
+            let qty = (i % 50 + 1) as i64;
+            let ext_price = 100.0 + (i % 99900) as f64;
+            let disc = 0.01 * ((i % 10) as f64);
+            let tax = 0.01 * ((i % 8) as f64);
+            let shipdate = if i % 3 != 0 { "'1998-08-15'" } else { "'1998-10-01'" };
+            values.push(format!("({}, '{}', '{}', {}, {}, {}, {}, {})", orderkey, rf, ls, qty, ext_price, disc, tax, shipdate));
+        }
+        let sql = format!("INSERT INTO lineitem VALUES {}", values.join(", "));
+        SqlExecutor::execute(state.as_ref(), &sql)?;
+        if end % progress_every == 0 || end == num_rows {
+            let elapsed = load_start.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 { end as f64 / elapsed } else { 0.0 };
+            println!("  ... {} rows ({:.0} rows/s)", end, rate);
+        }
+    }
+    let load_elapsed = load_start.elapsed();
+    println!("  Loaded in {:.2?} ({:.0} rows/s)\n", load_elapsed, num_rows as f64 / load_elapsed.as_secs_f64());
+
+    // TPC-H Q1: Pricing Summary Report
+    let q1 = "SELECT l_returnflag, l_linestatus, SUM(l_quantity), SUM(l_extendedprice), AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount), COUNT(*) FROM lineitem WHERE l_shipdate <= '1998-09-02' GROUP BY l_returnflag, l_linestatus ORDER BY l_returnflag, l_linestatus";
+
+    let mut latencies_us: Vec<u64> = Vec::with_capacity(args.runs);
+    let start = Instant::now();
+    for i in 0..args.runs {
+        let t0 = Instant::now();
+        let result = SqlExecutor::execute(state.as_ref(), q1)?;
+        latencies_us.push(t0.elapsed().as_micros() as u64);
+        if let rustafari_executor::ExecutionResult::Rows(rows) = result {
+            if i == 0 {
+                println!("  Q1 result: {} row(s)", rows.len());
+                for (j, row) in rows.iter().take(3).enumerate() {
+                    println!("    [{}] {:?}", j, row.values);
+                }
+            }
+        }
+    }
+    let elapsed = start.elapsed();
+
+    println!("Results (TPC-H Q1):");
+    println!("  lineitem rows:   {}", num_rows);
+    println!("  Q1 runs:         {}  ({:.1} runs/s)", args.runs, args.runs as f64 / elapsed.as_secs_f64());
+    if !latencies_us.is_empty() {
+        latencies_us.sort();
+        let p50 = latencies_us[latencies_us.len() * 50 / 100];
+        let p95_idx = (latencies_us.len() * 95 / 100).min(latencies_us.len().saturating_sub(1));
+        let p99_idx = (latencies_us.len() * 99 / 100).min(latencies_us.len().saturating_sub(1));
+        let p95 = latencies_us[p95_idx];
+        let p99 = latencies_us[p99_idx];
+        println!("  Q1 latency (ms): p50={:.2}  p95={:.2}  p99={:.2}", p50 as f64 / 1000., p95 as f64 / 1000., p99 as f64 / 1000.);
+    }
+    println!();
+    println!("Compare with SingleStore, StarRocks, Snowflake, Databricks TPC-H (see docs/benchmark-olap.md).");
     Ok(())
 }
